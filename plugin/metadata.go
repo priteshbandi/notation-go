@@ -1,19 +1,9 @@
-package proto
+package plugin
 
 import "errors"
 
-// GetMetadataRequest contains the parameters passed in a get-plugin-metadata
-// request.
-type GetMetadataRequest struct {
-	PluginConfig map[string]string `json:"pluginConfig,omitempty"`
-}
-
-func (GetMetadataRequest) Command() Command {
-	return CommandGetMetadata
-}
-
-// GetMetadataResponse provided by the plugin.
-type GetMetadataResponse struct {
+// Metadata provided by the plugin.
+type Metadata struct {
 	Name                      string       `json:"name"`
 	Description               string       `json:"description"`
 	Version                   string       `json:"version"`
@@ -23,36 +13,40 @@ type GetMetadataResponse struct {
 }
 
 // Validate checks if the metadata is correctly populated.
-func (resp *GetMetadataResponse) Validate() error {
-	if resp.Name == "" {
+func (m *Metadata) Validate() error {
+	if m.Name == "" {
 		return errors.New("empty name")
 	}
-	if resp.Description == "" {
+	if m.Description == "" {
 		return errors.New("empty description")
 	}
-	if resp.Version == "" {
+	if m.Version == "" {
 		return errors.New("empty version")
 	}
-	if resp.URL == "" {
+	if m.URL == "" {
 		return errors.New("empty url")
 	}
-	if len(resp.Capabilities) == 0 {
+	if len(m.Capabilities) == 0 {
 		return errors.New("empty capabilities")
 	}
-	if len(resp.SupportedContractVersions) == 0 {
+	if len(m.SupportedContractVersions) == 0 {
 		return errors.New("empty supported contract versions")
 	}
 	return nil
 }
 
+func (Metadata) Command() Command {
+	return CommandGetMetadata
+}
+
 // HasCapability return true if the metadata states that the
 // capability is supported.
 // Returns true if capability is empty.
-func (resp *GetMetadataResponse) HasCapability(capability Capability) bool {
+func (m *Metadata) HasCapability(capability Capability) bool {
 	if capability == "" {
 		return true
 	}
-	for _, c := range resp.Capabilities {
+	for _, c := range m.Capabilities {
 		if c == capability {
 			return true
 		}
@@ -62,8 +56,8 @@ func (resp *GetMetadataResponse) HasCapability(capability Capability) bool {
 
 // SupportsContract return true if the metadata states that the
 // contract version is supported.
-func (resp *GetMetadataResponse) SupportsContract(ver string) bool {
-	for _, v := range resp.SupportedContractVersions {
+func (m *Metadata) SupportsContract(ver string) bool {
+	for _, v := range m.SupportedContractVersions {
 		if v == ver {
 			return true
 		}
