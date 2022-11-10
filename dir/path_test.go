@@ -1,7 +1,6 @@
 package dir
 
 import (
-	"path/filepath"
 	"testing"
 )
 
@@ -10,15 +9,14 @@ func mockGetUserConfig() (string, error) {
 }
 
 func Test_loadPath(t *testing.T) {
-	wantDir := filepath.FromSlash("/path/notation")
 	userConfigDir = mockGetUserConfig
 	loadUserPath()
-	if UserConfigDir != wantDir {
-		t.Fatalf(`loadPath() UserConfigDir is incorrect. got: %q, want: %q`, UserConfigDir, wantDir)
+	if UserConfigDir != "/path/notation" {
+		t.Fatalf(`loadPath() UserConfigDir is incorrect. got: %q, want: "/path/notation"`, UserConfigDir)
 	}
 
 	if UserLibexecDir != UserConfigDir {
-		t.Fatalf(`loadPath() UserLibexecDir is incorrect. got: %q, want: %q`, UserLibexecDir, wantDir)
+		t.Fatalf(`loadPath() UserLibexecDir is incorrect. got: %q, want: "/path/notation"`, UserLibexecDir)
 	}
 }
 
