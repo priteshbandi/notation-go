@@ -52,7 +52,6 @@ func (m *UberManager) Get(ctx context.Context, name string) (Plugin, error) {
 	if p, ok := m.libPlugins[name]; ok {
 		return p, nil
 	}
-
 	if m.cliManager != nil {
 		return m.cliManager.Get(ctx, name)
 	}
@@ -64,8 +63,10 @@ func (m *UberManager) Get(ctx context.Context, name string) (Plugin, error) {
 func (m *UberManager) List(ctx context.Context) ([]string, error) {
 	list := make([]string, len(m.libPlugins))
 
+	i := 0
 	for name := range m.libPlugins {
-		list = append(list, name)
+		list[i] = name
+		i++
 	}
 
 	if m.cliManager != nil {
