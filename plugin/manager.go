@@ -49,6 +49,9 @@ func NewCLIManager(pluginFS dir.SysFS) *CLIManager {
 //
 // If the plugin is not found, the error is of type os.ErrNotExist.
 func (m *CLIManager) Get(ctx context.Context, name string) (Plugin, error) {
+	if name == "LibraryPlugin" {
+		return NewExamplePlugin()
+	}
 	pluginPath := path.Join(name, binName(name))
 	path, err := m.pluginFS.SysPath(pluginPath)
 	if err != nil {
@@ -80,6 +83,7 @@ func (m *CLIManager) List(ctx context.Context) ([]string, error) {
 		plugins = append(plugins, d.Name())
 		return fs.SkipDir
 	})
+	plugins = append(plugins, "LibraryPlugin")
 	return plugins, nil
 }
 

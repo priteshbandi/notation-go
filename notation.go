@@ -25,6 +25,8 @@ import (
 	"strings"
 	"time"
 
+	orasRegistry "oras.land/oras-go/v2/registry"
+
 	"github.com/notaryproject/notation-core-go/signature"
 	"github.com/notaryproject/notation-go/internal/envelope"
 	"github.com/notaryproject/notation-go/log"
@@ -32,7 +34,6 @@ import (
 	"github.com/notaryproject/notation-go/verifier/trustpolicy"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	orasRegistry "oras.land/oras-go/v2/registry"
 )
 
 var errDoneVerification = errors.New("done verification")
@@ -63,6 +64,9 @@ type Signer interface {
 	// Sign signs the artifact described by its descriptor,
 	// and returns the signature and SignerInfo.
 	Sign(ctx context.Context, desc ocispec.Descriptor, opts SignerSignOptions) ([]byte, *signature.SignerInfo, error)
+
+	// SignBlob signs the arbitrary data and returns the signature and SignerInfo.
+	SignBlob(ctx context.Context, content []byte, contentType string, opts SignerSignOptions) ([]byte, *signature.SignerInfo, error)
 }
 
 // signerAnnotation facilitates return of manifest annotations by signers
@@ -74,15 +78,56 @@ type signerAnnotation interface {
 
 // SignOptions contains parameters for notation.Sign.
 type SignOptions struct {
-	SignerSignOptions
+	SignBlobOptions
 
 	// ArtifactReference sets the reference of the artifact that needs to be
 	// signed. It can be a tag, a digest or a full reference.
 	ArtifactReference string
+}
+
+type SignBlobOptions struct {
+	SignerSignOptions
+
+	ContentMediaType string
 
 	// UserMetadata contains key-value pairs that are added to the signature
 	// payload
 	UserMetadata map[string]string
+}
+
+func SignBlob(ctx context.Context, signer Signer, content []byte, signOpts SignBlobOptions) ([]byte, error) {
+	// sanity check
+	if signer == nil {
+		return nil, errors.New("signer cannot be nil")
+	}
+	if content == nil {
+		return nil, errors.New("content cannot be nil")
+	}
+	if signOpts.ExpiryDuration < 0 {
+		return nil, fmt.Errorf("expiry duration cannot be a negative value")
+	}
+	if signOpts.ExpiryDuration%time.Second != 0 {
+		return nil, fmt.Errorf("expiry duration supports minimum granularity of seconds")
+	}
+	logger := log.GetLogger(ctx)
+
+	desc := ocispec.Descriptor{
+		MediaType: "",
+		Digest:    "",
+		Size:      0,
+	}
+	descToSign, err := addUserMetadataToDescriptor(ctx, desc, signOpts.UserMetadata)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Debugf("descriptor being signed: %+v", desc)
+	sig, _, err := signer.Sign(ctx, descToSign, signOpts.SignerSignOptions)
+	if err != nil {
+		return nil, err
+	}
+
+	return sig, nil
 }
 
 // Sign signs the artifact and push the signature to the Repository.
