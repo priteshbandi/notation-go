@@ -27,8 +27,10 @@ import (
 
 	"github.com/notaryproject/notation-core-go/signature"
 	_ "github.com/notaryproject/notation-core-go/signature/cose"
+	"github.com/notaryproject/notation-core-go/signature/jws"
 	_ "github.com/notaryproject/notation-core-go/signature/jws"
 	"github.com/notaryproject/notation-go"
+	"github.com/notaryproject/notation-go/dir"
 	"github.com/notaryproject/notation-go/internal/envelope"
 	"github.com/notaryproject/notation-go/plugin"
 	"github.com/notaryproject/notation-go/plugin/proto"
@@ -203,6 +205,25 @@ func (p *mockPlugin) GenerateEnvelope(ctx context.Context, req *proto.GenerateEn
 		}, nil
 	}
 	return &proto.GenerateEnvelopeResponse{}, nil
+}
+
+func TestSignBlobS(t *testing.T) {
+	reader := strings.NewReader("some content")
+	mgr := plugin.NewCLIManager(dir.PluginFS())
+	plugin, _ := mgr.Get(context.Background(), "com.amazonaws.signer.notation.plugin")
+	s, _ := NewBlobSignerFromPlugin(plugin, "arn:aws:signer:us-west-2:951584113157:/signing-profiles/demo", nil)
+
+	opts := notation.SignBlobOptions{
+		SignerSignOptions: notation.SignerSignOptions{
+			SignatureMediaType: jws.MediaTypeEnvelope,
+			SigningAgent:       "me!",
+		},
+		ContentMediaType: "",
+	}
+	_, err := notation.SignBlob(context.Background(), s, reader, opts)
+	if err != nil {
+		t.Fatalf("Sign failed with error: %v", err)
+	}
 }
 
 func TestNewFromPluginFailed(t *testing.T) {

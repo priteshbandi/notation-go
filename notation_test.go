@@ -17,14 +17,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/notaryproject/notation-core-go/signature"
 	"github.com/notaryproject/notation-core-go/signature/cose"
+	"github.com/notaryproject/notation-core-go/signature/jws"
 	"github.com/notaryproject/notation-go/internal/mock"
 	"github.com/notaryproject/notation-go/plugin"
 	"github.com/notaryproject/notation-go/registry"
@@ -53,6 +56,80 @@ func TestSignSuccess(t *testing.T) {
 			_, err := Sign(context.Background(), &dummySigner{}, repo, opts)
 			if err != nil {
 				b.Fatalf("Sign failed with error: %v", err)
+			}
+		})
+	}
+}
+
+func TestSignBlobSuccess(t *testing.T) {
+	reader := strings.NewReader("some content")
+	testCases := []struct {
+		name     string
+		dur      time.Duration
+		mtype    string
+		agent    string
+		pConfig  map[string]string
+		metadata map[string]string
+	}{
+		{"expiryInHours", 24 * time.Hour, "video/mp4", "", nil, nil},
+		{"oneSecondExpiry", 1 * time.Second, "video/mp4", "", nil, nil},
+		{"zeroExpiry", 0, "video/mp4", "", nil, nil},
+		//{"invalidContentMediaType", 1 * time.Second, "zap/zop/sop", nil, nil},
+		{"validContentType", 1 * time.Second, "video/mp4", "", nil, nil},
+		{"emptyContentType", 1 * time.Second, "", "", nil, nil},
+		{"emptyContentType", 1 * time.Second, "video/mp4", "someDummyAgent", map[string]string{"hi": "hello"}, map[string]string{"bye": "tata"}},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(b *testing.T) {
+			opts := SignBlobOptions{
+				SignerSignOptions: SignerSignOptions{
+					SignatureMediaType: jws.MediaTypeEnvelope,
+					ExpiryDuration:     tc.dur,
+					PluginConfig:       tc.pConfig,
+					SigningAgent:       tc.agent,
+				},
+				UserMetadata:     expectedMetadata,
+				ContentMediaType: tc.mtype,
+			}
+
+			_, err := SignBlob(context.Background(), &dummySigner{}, reader, opts)
+			if err != nil {
+				b.Fatalf("Sign failed with error: %v", err)
+			}
+		})
+	}
+}
+
+func TestSignError(t *testing.T) {
+	reader := strings.NewReader("some content")
+	testCases := []struct {
+		name   string
+		signer BlobSigner
+		dur    time.Duration
+		rdr    io.Reader
+		mtype  string
+	}{
+		{"negativeExpiry", &dummySigner{}, -1 * time.Second, nil, "video/mp4"},
+		{"milliSecExpiry", &dummySigner{}, 1 * time.Millisecond, nil, "video/mp4"},
+		{"invalidContentMediaType", &dummySigner{}, 1 * time.Second, reader, "video/mp4/zoping"},
+		{"nilReader", &dummySigner{}, 1 * time.Second, nil, "video/mp4"},
+		{"nilSigner", nil, 1 * time.Second, reader, "video/mp4"},
+		{"signerError", &dummySigner{fail: true}, 1 * time.Second, reader, "video/mp4"},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(b *testing.T) {
+			opts := SignBlobOptions{
+				SignerSignOptions: SignerSignOptions{
+					SignatureMediaType: jws.MediaTypeEnvelope,
+					ExpiryDuration:     tc.dur,
+					PluginConfig:       nil,
+				},
+				ContentMediaType: tc.mtype,
+			}
+
+			_, err := SignBlob(context.Background(), tc.signer, tc.rdr, opts)
+			if err == nil {
+				b.Error("expected error but didnt found")
 			}
 		})
 	}
@@ -320,9 +397,23 @@ func dummyPolicyStatement() (policyStatement trustpolicy.TrustPolicy) {
 	return
 }
 
-type dummySigner struct{}
+type dummySigner struct {
+	fail bool
+}
 
 func (s *dummySigner) Sign(ctx context.Context, desc ocispec.Descriptor, opts SignerSignOptions) ([]byte, *signature.SignerInfo, error) {
+	return []byte("ABC"), &signature.SignerInfo{
+		SignedAttributes: signature.SignedAttributes{
+			SigningTime: time.Now(),
+		},
+	}, nil
+}
+
+func (s *dummySigner) SignBlob(ctx context.Context, reader io.Reader, opts SignBlobOptions) ([]byte, *signature.SignerInfo, error) {
+	if s.fail {
+		return nil, nil, errors.New("expected SignBlob failure")
+	}
+
 	return []byte("ABC"), &signature.SignerInfo{
 		SignedAttributes: signature.SignedAttributes{
 			SigningTime: time.Now(),

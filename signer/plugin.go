@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"oras.land/oras-go/v2/content"
@@ -60,65 +61,27 @@ func NewFromPlugin(plugin plugin.SignPlugin, keyID string, pluginConfig map[stri
 	}, nil
 }
 
+// NewBlobSignerFromPlugin creates a notation.Signer that signs artifacts and generates
+// signatures by delegating the one or more operations to the named plugin,
+// as defined in https://github.com/notaryproject/notaryproject/blob/main/specs/plugin-extensibility.md#signing-interfaces.
+func NewBlobSignerFromPlugin(plugin plugin.SignPlugin, keyID string, pluginConfig map[string]string) (notation.BlobSigner, error) {
+	if plugin == nil {
+		return nil, errors.New("nil plugin")
+	}
+	if keyID == "" {
+		return nil, errors.New("keyID not specified")
+	}
+
+	return &pluginSigner{
+		plugin:       plugin,
+		keyID:        keyID,
+		pluginConfig: pluginConfig,
+	}, nil
+}
+
 // PluginAnnotations returns signature manifest annotations returned from plugin
 func (s *pluginSigner) PluginAnnotations() map[string]string {
 	return s.manifestAnnotations
-}
-
-// SignBlob signs the arbitrary data and returns the marshalled envelope.
-func (s *pluginSigner) SignBlob(ctx context.Context, content []byte, contentType string, opts notation.SignerSignOptions) ([]byte, *signature.SignerInfo, error) {
-	logger := log.GetLogger(ctx)
-	mergedConfig := s.mergeConfig(opts.PluginConfig)
-
-	logger.Debug("Invoking plugin's get-plugin-metadata command")
-	req := &proto.GetMetadataRequest{
-		PluginConfig: s.mergeConfig(opts.PluginConfig),
-	}
-	metadata, err := s.plugin.GetMetadata(ctx, req)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// Get key info and validate.
-	logger.Debug("Invoking plugin's describe-key command")
-	descKeyResp, err := s.describeKey(ctx, mergedConfig)
-	if err != nil {
-		return nil, nil, err
-	}
-	if s.keyID != descKeyResp.KeyID {
-		return nil, nil, fmt.Errorf("keyID in describeKey response %q does not match request %q", descKeyResp.KeyID, s.keyID)
-	}
-	ks, err := proto.DecodeKeySpec(descKeyResp.KeySpec)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	desc := getDescriptor(content, contentType, ks)
-
-	logger.Debugf("Using plugin %v with capabilities %v to sign artifact %v in signature media type %v", metadata.Name, metadata.Capabilities, desc.Digest, opts.SignatureMediaType)
-	if proto.HasCapability(metadata, proto.CapabilitySignatureGenerator) {
-		return s.generateSignature(ctx, desc, opts, ks, metadata)
-	} else if proto.HasCapability(metadata, proto.CapabilityEnvelopeGenerator) {
-		return s.generateSignatureEnvelope(ctx, desc, opts)
-	}
-	return nil, nil, fmt.Errorf("plugin does not have signing capabilities")
-}
-
-func getDescriptor(content []byte, mediaType string, ks signature.KeySpec) ocispec.Descriptor {
-	hashAlgo := ks.SignatureAlgorithm().Hash()
-	h := hashAlgo.HashFunc().New()
-	h.Write(content)
-	hash := h.Sum(nil)
-
-	if mediaType == "" {
-		mediaType = "application/octet-stream"
-	}
-
-	return ocispec.Descriptor{
-		MediaType: mediaType,
-		Digest:    digest.FromBytes(hash),
-		Size:      int64(len(content)),
-	}
 }
 
 // Sign signs the artifact described by its descriptor and returns the
@@ -128,24 +91,13 @@ func (s *pluginSigner) Sign(ctx context.Context, desc ocispec.Descriptor, opts n
 	mergedConfig := s.mergeConfig(opts.PluginConfig)
 
 	logger.Debug("Invoking plugin's get-plugin-metadata command")
-	req := &proto.GetMetadataRequest{
-		PluginConfig: s.mergeConfig(opts.PluginConfig),
-	}
-	metadata, err := s.plugin.GetMetadata(ctx, req)
+	metadata, err := s.plugin.GetMetadata(ctx, &proto.GetMetadataRequest{PluginConfig: mergedConfig})
 	if err != nil {
 		return nil, nil, err
 	}
 
 	// Get key info and validate.
-	logger.Debug("Invoking plugin's describe-key command")
-	descKeyResp, err := s.describeKey(ctx, mergedConfig)
-	if err != nil {
-		return nil, nil, err
-	}
-	if s.keyID != descKeyResp.KeyID {
-		return nil, nil, fmt.Errorf("keyID in describeKey response %q does not match request %q", descKeyResp.KeyID, s.keyID)
-	}
-	ks, err := proto.DecodeKeySpec(descKeyResp.KeySpec)
+	ks, err := s.getKeySpec(ctx, mergedConfig)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -159,8 +111,51 @@ func (s *pluginSigner) Sign(ctx context.Context, desc ocispec.Descriptor, opts n
 	return nil, nil, fmt.Errorf("plugin does not have signing capabilities")
 }
 
-func (s *pluginSigner) generateBlogSignature(ctx context.Context, desc ocispec.Descriptor, opts notation.SignerSignOptions, response *proto.DescribeKeyResponse) ([]byte, *signature.SignerInfo, error) {
+// SignBlob signs the arbitrary data and returns the marshalled envelope.
+func (s *pluginSigner) SignBlob(ctx context.Context, reader io.Reader, opts notation.SignBlobOptions) ([]byte, *signature.SignerInfo, error) {
+	logger := log.GetLogger(ctx)
+	mergedConfig := s.mergeConfig(opts.PluginConfig)
 
+	logger.Debug("Invoking plugin's get-plugin-metadata command")
+	metadata, err := s.plugin.GetMetadata(ctx, &proto.GetMetadataRequest{PluginConfig: mergedConfig})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Get key info and validate.
+	ks, err := s.getKeySpec(ctx, mergedConfig)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	desc, err := getDescriptor(reader, opts.ContentMediaType, ks)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	logger.Debugf("Using plugin %v with capabilities %v to sign artifact using descriptor %+v", metadata.Name, metadata.Capabilities, desc)
+	if proto.HasCapability(metadata, proto.CapabilitySignatureGenerator) {
+		return s.generateSignature(ctx, desc, opts.SignerSignOptions, ks, metadata)
+	} else if proto.HasCapability(metadata, proto.CapabilityEnvelopeGenerator) {
+		return s.generateSignatureEnvelope(ctx, desc, opts.SignerSignOptions)
+	}
+	return nil, nil, fmt.Errorf("plugin does not have signing capabilities")
+}
+
+func (s *pluginSigner) getKeySpec(ctx context.Context, config map[string]string) (signature.KeySpec, error) {
+	// Get key info and validate.
+	logger := log.GetLogger(ctx)
+	logger.Debug("Invoking plugin's describe-key command")
+	descKeyResp, err := s.describeKey(ctx, config)
+	if err != nil {
+		return signature.KeySpec{}, err
+	}
+
+	if s.keyID != descKeyResp.KeyID {
+		return signature.KeySpec{}, fmt.Errorf("keyID in describeKey response %q does not match request %q", descKeyResp.KeyID, s.keyID)
+	}
+
+	return proto.DecodeKeySpec(descKeyResp.KeySpec)
 }
 
 func (s *pluginSigner) generateSignature(ctx context.Context, desc ocispec.Descriptor, opts notation.SignerSignOptions, ks signature.KeySpec, metadata *proto.GetMetadataResponse) ([]byte, *signature.SignerInfo, error) {
@@ -253,6 +248,26 @@ func (s *pluginSigner) mergeConfig(config map[string]string) map[string]string {
 		c[k] = v
 	}
 	return c
+}
+
+func getDescriptor(reader io.Reader, mediaType string, ks signature.KeySpec) (ocispec.Descriptor, error) {
+	hashAlgo := ks.SignatureAlgorithm().Hash()
+	h := hashAlgo.HashFunc().New()
+	bytes, err := io.Copy(h, reader)
+	if err != nil {
+		return ocispec.Descriptor{}, err
+	}
+
+	hash := h.Sum(nil)
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+
+	return ocispec.Descriptor{
+		MediaType: mediaType,
+		Digest:    digest.FromBytes(hash),
+		Size:      bytes,
+	}, nil
 }
 
 func (s *pluginSigner) describeKey(ctx context.Context, config map[string]string) (*proto.DescribeKeyResponse, error) {
