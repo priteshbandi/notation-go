@@ -96,14 +96,13 @@ func (s *pluginSigner) Sign(ctx context.Context, desc ocispec.Descriptor, opts n
 		return nil, nil, err
 	}
 
-	// Get key info and validate.
-	ks, err := s.getKeySpec(ctx, mergedConfig)
-	if err != nil {
-		return nil, nil, err
-	}
-
 	logger.Debugf("Using plugin %v with capabilities %v to sign artifact %v in signature media type %v", metadata.Name, metadata.Capabilities, desc.Digest, opts.SignatureMediaType)
 	if proto.HasCapability(metadata, proto.CapabilitySignatureGenerator) {
+		// Get key info and validate.
+		ks, err := s.getKeySpec(ctx, mergedConfig)
+		if err != nil {
+			return nil, nil, err
+		}
 		return s.generateSignature(ctx, desc, opts, ks, metadata)
 	} else if proto.HasCapability(metadata, proto.CapabilityEnvelopeGenerator) {
 		return s.generateSignatureEnvelope(ctx, desc, opts)
